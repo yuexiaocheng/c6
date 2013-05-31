@@ -233,7 +233,8 @@ static void write_access_log(c6_conn_pt c) {
     n = localtime(&tv.tv_sec);
     strftime(time_now, sizeof(time_now)-1, "%Y%m%d %H:%M:%S", n);
     strftime(time_now_hour, sizeof(time_now_hour)-1, "%Y%m%d_%H", n);
-    safe_snprintf(path, sizeof(path)-1, "%s_%s%02d.log", glo.access_log_path, time_now_hour, a[n->tm_min]);
+    safe_snprintf(path, sizeof(path)-1, "%s_%s%02d.log.%u", 
+            glo.access_log_path, time_now_hour, a[n->tm_min], glo.listen_port);
 
     mkdir_r(path);
     p = fopen(path, "a+");
@@ -284,42 +285,42 @@ static void write_access_log(c6_conn_pt c) {
 
 static int tc_worker_proxy(c6_conn_pt c, char* host, unsigned short port) {
     // first create proxy connection
-	int sockfd = -1;
-	int nb = 1;
-	int ret =0;
-	struct sockaddr_in addr;
-	c6_conn_pt cproxy = NULL;
-	char ip[32];
+    int sockfd = -1;
+    int nb = 1;
+    int ret =0;
+    struct sockaddr_in addr;
+    c6_conn_pt cproxy = NULL;
+    char ip[32];
 
 
-	get_realip(host, ip, sizeof(ip)-1);
+    get_realip(host, ip, sizeof(ip)-1);
 
-	memset(&addr, 0x00, sizeof(addr));
-	if (!inet_aton(ip, &addr.sin_addr)) {
-		Error("%s(%d): bad host: %s, ip: %s", __FUNCTION__, __LINE__, host, ip);
-		return -1;
-	}
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(port);
+    memset(&addr, 0x00, sizeof(addr));
+    if (!inet_aton(ip, &addr.sin_addr)) {
+        Error("%s(%d): bad host: %s, ip: %s", __FUNCTION__, __LINE__, host, ip);
+        return -1;
+    }
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
 
-	sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (-1 == sockfd) {
-		Error("%s(%d): socket() failed. error(%d): %s\n", __FUNCTION__, __LINE__, errno, strerror(errno));
-		return -2;
-	}
-	if (ioctl(sockfd, FIONBIO, &nb)) {
-		Error("%s(%d): ioctl(FIONBIO) failed. error(%d): %s\n", __FUNCTION__, __LINE__, errno, strerror(errno));
-		close(sockfd);
-		return -3;
-	}
-	ret = connect(sockfd, (struct sockaddr *)&addr, sizeof(addr));
-	if (-1 == ret && EINPROGRESS != errno) {
-		Error("%s(%d): connecting to %s:%d failed", 
+    sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (-1 == sockfd) {
+        Error("%s(%d): socket() failed. error(%d): %s\n", __FUNCTION__, __LINE__, errno, strerror(errno));
+        return -2;
+    }
+    if (ioctl(sockfd, FIONBIO, &nb)) {
+        Error("%s(%d): ioctl(FIONBIO) failed. error(%d): %s\n", __FUNCTION__, __LINE__, errno, strerror(errno));
+        close(sockfd);
+        return -3;
+    }
+    ret = connect(sockfd, (struct sockaddr *)&addr, sizeof(addr));
+    if (-1 == ret && EINPROGRESS != errno) {
+        Error("%s(%d): connecting to %s:%d failed", 
                 __FUNCTION__, __LINE__, inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
-		close(sockfd);
-		return -4;
-	}
-	fcntl(sockfd, F_SETFD, 1);
+        close(sockfd);
+        return -4;
+    }
+    fcntl(sockfd, F_SETFD, 1);
 
     cproxy = make_conn(sockfd, sock_type_proxy);
     memcpy(&cproxy->client_addr, &addr, sizeof(struct sockaddr_in));
@@ -1096,9 +1097,6 @@ static int init(int argc, char* argv[]) {
             "finally, light_worker_num=%d, tc_worker_num=%d\n", 
             cn, lightn, tcn, glo.light_worker_num, glo.tc_worker_num);
 
-    // init log file
-    xlog_init(glo.log_path);
-
     // set listener
     glo.listen_addr.sin_family = AF_INET;
     glo.listen_addr.sin_addr.s_addr = inet_addr(glo.listen_ip);
@@ -1134,8 +1132,13 @@ static int business_worker() {
     size_t sz = 0;
     struct ev_loop* loop = EV_DEFAULT;
     c6_conn_pt c = NULL;
+    char lpath[256];
 
     glo.pid = getpid();
+    
+    // init log file
+    safe_snprintf(lpath, sizeof(lpath)-1, "%s.%u", glo.log_path, glo.listen_port);
+    xlog_init(lpath);
 
     // malloc cections
     sz = sizeof(c6_conn_t) * MAX_SOCKET;
@@ -1178,10 +1181,8 @@ int main(int argc, char* argv[]) {
     }
 
     // daemon it
-    // daemon(1, 1);
+    daemon(1, 1);
 
-    // fork chile for wait
-    // child
     glo.role = light_worker;
     glo.listen_sockfd = create_listener(&glo.listen_addr);
     if (glo.listen_sockfd < 0) {
