@@ -756,7 +756,7 @@ static void client_recv_cb(EV_P_ ev_io *w, int revents) {
         if (is_complete_http_req_header(c)) {
             status = do_work(c);
             if (status != 200) {
-                Error("%s(%d): ret %d, failed\n", __FUNCTION__, status);
+                Error("%s(%d): ret %d, failed\n", __FUNCTION__, __LINE__, status);
                 send_http_wrong_rsp(c, status);
             }
         }
