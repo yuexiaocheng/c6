@@ -58,7 +58,8 @@ typedef struct {
 
 CONFIG glo;
 
-static long long now(void) ;
+static long long now(void);
+static void fill_access_time(c6_conn_pt c);
 
 static c6_conn_pt make_conn(int socket, conn_type_t type);
 static c6_conn_pt take_conn(int socket, int session);
@@ -66,7 +67,8 @@ static void reset_conn(c6_conn_pt c);
 static void free_conn(c6_conn_pt c);
 
 static int send_http_rsp(c6_conn_pt c, int status);
-static int send_http_wrong_rsp(c6_conn_pt c, int status);
+static int send_http_simple_rsp(c6_conn_pt c, int status, char* out);
+static int send_subreq_http_req(c6_conn_pt c);
 
 static int do_client_send_header(c6_conn_pt c);
 static int do_client_send_body(c6_conn_pt c);
@@ -84,6 +86,14 @@ static int do_proxy_send_header(c6_conn_pt c);
 static void proxy_send_cb(EV_P_ ev_io *w, int revents);
 static void proxy_recv_cb(EV_P_ ev_io *w, int revents);
 static void do_proxy_close(c6_conn_pt c);
+
+static int do_subreq_recv_header(c6_conn_pt c);
+static int do_subreq_recv_body(c6_conn_pt c);
+static int do_subreq_send_header(c6_conn_pt c);
+
+static void subreq_send_cb(EV_P_ ev_io *w, int revents);
+static void subreq_recv_cb(EV_P_ ev_io *w, int revents);
+static void do_subreq_close(c6_conn_pt c);
 
 static c6_conn_pt make_conn(int socket, conn_type_t type) {
     c6_conn_pt c = &(glo.cs[socket]);
@@ -106,6 +116,7 @@ static c6_conn_pt make_conn(int socket, conn_type_t type) {
             ev_io_start(glo.loop, &c->read_ev);
             break;
         case sock_type_subreq:
+            c->do_close = do_subreq_close;
             break;
         case sock_type_proxy:
             c->do_close = do_proxy_close;
@@ -163,7 +174,6 @@ static void reset_conn(c6_conn_pt c) {
 
     c->head_bytes_to_send = 0;
     c->body_bytes_to_send = 0;
-    c->bytes_to_recv = 0;
 
     c->recv_buf[0] = '\0';
     c->send_buf[0] = '\0';
@@ -204,6 +214,21 @@ static long long now(void) {
 
     gettimeofday(&tv, 0);
     return ((long long)tv.tv_sec*1000*1000 + (long long)tv.tv_usec);
+}
+
+static void fill_access_time(c6_conn_pt c) {
+    struct timeval tv;
+    struct tm* n;
+    char time_now[64] = {0};
+
+    gettimeofday(&tv, 0);
+    n = localtime(&tv.tv_sec);
+    strftime(time_now, sizeof(time_now)-1, "%Y%m%d %H:%M:%S", n);
+
+    int64_t now = (int64_t)tv.tv_sec*1000*1000 + (int64_t)tv.tv_usec;
+    c->begin_ms = (long)(now/1000);
+    safe_snprintf(c->access_time, sizeof(c->access_time)-1, "%s.%03ld", time_now, (tv.tv_usec/1000));
+    return;
 }
 
 static void write_access_log(c6_conn_pt c) {
@@ -292,7 +317,6 @@ static int tc_worker_proxy(c6_conn_pt c, char* host, unsigned short port) {
     c6_conn_pt cproxy = NULL;
     char ip[32];
 
-
     get_realip(host, ip, sizeof(ip)-1);
 
     memset(&addr, 0x00, sizeof(addr));
@@ -327,9 +351,7 @@ static int tc_worker_proxy(c6_conn_pt c, char* host, unsigned short port) {
     cproxy->e_session_id = c->session_id;
     cproxy->e_sockfd = c->sockfd;
 
-    cproxy->header = c->header;
-    write_access_log(cproxy);
-    cproxy->header = NULL;
+    fill_access_time(cproxy);
 
     c->e_session_id = cproxy->session_id;
     c->e_sockfd = cproxy->sockfd;
@@ -342,6 +364,69 @@ static int tc_worker_proxy(c6_conn_pt c, char* host, unsigned short port) {
     cproxy->bytes_sent = 0;
     ev_io_init(&cproxy->write_ev, proxy_send_cb, cproxy->sockfd, EV_WRITE);
     ev_io_start(glo.loop, &cproxy->write_ev);
+    return 0;
+}
+
+static int do_subreq(c6_conn_pt c, char* host, unsigned short port) {
+    // first create proxy connection
+    int sockfd = -1;
+    int nb = 1;
+    int ret =0;
+    struct sockaddr_in addr;
+    c6_conn_pt csq = NULL;
+    char ip[32];
+    char first_line[1024];
+
+    get_realip(host, ip, sizeof(ip)-1);
+
+    memset(&addr, 0x00, sizeof(addr));
+    if (!inet_aton(ip, &addr.sin_addr)) {
+        Error("%s(%d): bad host: %s, ip: %s", __FUNCTION__, __LINE__, host, ip);
+        return -1;
+    }
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+
+    sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (-1 == sockfd) {
+        Error("%s(%d): socket() failed. error(%d): %s\n", __FUNCTION__, __LINE__, errno, strerror(errno));
+        return -2;
+    }
+    if (ioctl(sockfd, FIONBIO, &nb)) {
+        Error("%s(%d): ioctl(FIONBIO) failed. error(%d): %s\n", __FUNCTION__, __LINE__, errno, strerror(errno));
+        close(sockfd);
+        return -3;
+    }
+    ret = connect(sockfd, (struct sockaddr *)&addr, sizeof(addr));
+    if (-1 == ret && EINPROGRESS != errno) {
+        Error("%s(%d): connecting to %s:%d failed", 
+                __FUNCTION__, __LINE__, inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
+        close(sockfd);
+        return -4;
+    }
+    fcntl(sockfd, F_SETFD, 1);
+
+    csq = make_conn(sockfd, sock_type_subreq);
+    memcpy(&csq->client_addr, &addr, sizeof(struct sockaddr_in));
+    csq->e_session_id = c->session_id;
+    csq->e_sockfd = c->sockfd;
+
+    fill_access_time(csq);
+
+    c->e_session_id = csq->session_id;
+    c->e_sockfd = csq->sockfd;
+    
+    // finish create connect, now fill request data and set write event
+    safe_snprintf(first_line, sizeof(first_line)-1, "GET %s HTTP/1.1", "/");
+    csq->header = cJSON_CreateObject();
+    cJSON_AddStringToObject(csq->header, "first_line", first_line);
+    cJSON_AddStringToObject(csq->header, "Content-Type", "text/plain;charset=UTF-8");
+    cJSON_AddStringToObject(csq->header, "Server", C6_SERVER);
+    cJSON_AddStringToObject(csq->header, "Connection", "close");
+    safe_snprintf(first_line, sizeof(first_line)-1, "%s:%u", ip, port);
+    cJSON_AddStringToObject(csq->header, "Host", first_line);
+    
+    send_subreq_http_req(csq);
     return 0;
 }
 
@@ -402,6 +487,10 @@ static int on_test_tc(c6_conn_pt c) {
     return 0;
 }
 
+static int on_test_sq(c6_conn_pt c) {
+    return do_subreq(c, "www.baidu.com", 80);
+}
+
 static int do_work(c6_conn_pt c) {
     write_access_log(c);
     
@@ -411,9 +500,30 @@ static int do_work(c6_conn_pt c) {
         on_test(c);
     else if ((n == sizeof("/test_tc")-1) && (0 == memcmp(cmd, "/test_tc", sizeof("/test_tc")-1)))
         on_test_tc(c);
+    else if ((n == sizeof("/test_sq")-1) && (0 == memcmp(cmd, "/test_sq", sizeof("/test_sq")-1)))
+        on_test_sq(c);
     else
         return 400;
     return 200;
+}
+
+static int send_subreq_http_req(c6_conn_pt c) {
+    if (c->sockfd < 0)
+        return 0;
+    dyn_buf buf;
+
+    init_buffer(&buf, 1024);
+    http_create_request_header(c->header, &buf);
+    c->head_bytes_to_send = get_buffer_len(&buf);
+    safe_memcpy(c->send_buf, sizeof(c->send_buf), get_buffer(&buf), c->head_bytes_to_send);
+
+    c->is_sent_header = 0;
+    c->body_bytes_to_send = 0;
+    c->bytes_sent = 0;
+
+    ev_io_init(&c->write_ev, subreq_send_cb, c->sockfd, EV_WRITE);
+    ev_io_start(glo.loop, &c->write_ev);
+    return 0;
 }
 
 static int send_http_rsp(c6_conn_pt c, int status) {
@@ -427,6 +537,7 @@ static int send_http_rsp(c6_conn_pt c, int status) {
     safe_memcpy(c->send_buf, sizeof(c->send_buf), get_buffer(&buf), c->head_bytes_to_send);
 
     c->body_bytes_to_send = c->content_length;
+    c->is_sent_header = 0;
     c->bytes_sent = 0;
     c->status = status;
 
@@ -435,7 +546,7 @@ static int send_http_rsp(c6_conn_pt c, int status) {
     return 0;
 }
 
-static int send_http_wrong_rsp(c6_conn_pt c, int status) {
+static int send_http_simple_rsp(c6_conn_pt c, int status, char* out) {
     if (c->sockfd < 0)
         return 0;
     dyn_buf buf;
@@ -490,7 +601,22 @@ static int send_http_wrong_rsp(c6_conn_pt c, int status) {
         cJSON_AddStringToObject(c->rsp_header, "Connection", "keep-alive");
     else
         cJSON_AddStringToObject(c->rsp_header, "Connection", "close");
-    c->content_length = 0;
+    if (NULL == out) {
+        c->content_length = 0;
+    }
+    else {
+        c->content_length = strlen(out);
+        c->body_send_buf = (char*)malloc(c->content_length);
+        if (NULL == c->body_send_buf) {
+            Error("%s(%d): malloc %d bytes failed\n", 
+                    __FUNCTION__, __LINE__, c->content_length);
+            c->do_close(c);
+            return -5;
+        }
+        memcpy(c->body_send_buf, out,  c->content_length);
+    }
+    if (c->content_length > 0)
+        cJSON_AddNumberToObject(c->rsp_header, "Content-Length", c->content_length);
     http_create_rsponse_header(c->rsp_header, &buf);
     c->head_bytes_to_send = get_buffer_len(&buf);
     safe_memcpy(c->send_buf, sizeof(c->send_buf), get_buffer(&buf), c->head_bytes_to_send);
@@ -718,7 +844,193 @@ static void proxy_send_cb(EV_P_ ev_io *w, int revents) {
     return;
 }
 
+static int do_proxy_send_header(c6_conn_pt c)
+{
+    int ret = 0;
+    long long need_send = 0;
+
+    need_send = c->head_bytes_to_send - c->bytes_sent;
+    ret = send(c->sockfd, c->send_buf+c->bytes_sent, need_send, 0);
+    if (ret < 0) {
+        if (EAGAIN == errno || EINTR == errno) {
+            Info("%s(%d): send(%d,%lld) not ready\n", __FUNCTION__, __LINE__, c->sockfd, need_send);
+            return 0;
+        }
+        Error("%s(%d): send(%d,%lld) failed. error(%d): %s\n", 
+                __FUNCTION__, __LINE__, c->sockfd, need_send, errno, strerror(errno));
+        c->do_close(c);
+        return -1;
+    }
+    else {
+        // ok get some data
+        c->active_at = now();
+        c->bytes_sent += ret;
+        if (c->bytes_sent == c->head_bytes_to_send) {
+            Info("%s(%d): %s+%d, http header is sent\n", 
+                    __FUNCTION__, __LINE__, c->access_time, now()/1000 - c->begin_ms);
+            // head over, now body
+            c->bytes_sent = 0;
+            c->is_sent_header = 1;
+        }
+    }
+    return 0;
+}
+
 static void do_proxy_close(c6_conn_pt c) {
+    free_conn(c);
+    return;
+}
+
+static int do_subreq_recv_body(c6_conn_pt c) {
+    int ret = 0;
+    int left = 0;
+    c6_conn_pt client = NULL;
+    
+    left = c->content_length - c->bytes_recved;
+    ret = recv(c->sockfd, c->body_recv_buf+c->bytes_recved, left, 0);
+    if (ret < 0) {
+        if (EAGAIN == errno || EINTR == errno) {
+            Info("%s(%d): recv(%d,%d) not ready\n", __FUNCTION__, __LINE__, c->sockfd, left);
+            return -2;
+        }
+        Error("%s(%d): recv(%d,%d) failed. error(%d): %s\n", 
+                __FUNCTION__, __LINE__, c->sockfd, left, errno, strerror(errno));
+        c->do_close(c);
+        return -3 ;
+    }
+    else if (0 == ret) {
+        // peer close
+        // Error("%s(%d): recv(%d,%d) return 0, peer closed\n", __FUNCTION__, __LINE__, c->sockfd, left);
+        c->do_close(c);
+        return -4;
+    }
+    else {
+        // ok get some data
+        c->active_at = now();
+        c->bytes_recved += ret;
+        if (c->bytes_recved == c->content_length) {
+            // finish subreq, we handle the response from subreq, and prepare response for client
+            // here, we just send `ok`, you may replace it by your code
+            client = take_conn(c->e_sockfd, c->e_session_id);
+            if (NULL == client) {
+                Error("%s(%d): client(%d,%d) is changed, discard this response\n", 
+                        __FUNCTION__, __LINE__, c->e_sockfd, c->e_session_id);
+                c->do_close(c);
+                return -1;
+            }
+            send_http_simple_rsp(client, 200, c->body_recv_buf);
+        }
+    }
+    return 0;
+}
+
+static int do_subreq_recv_header(c6_conn_pt c) {
+    int ret = 0;
+    int left = 0;
+    int more = 0;
+
+    left = sizeof(c->recv_buf) - c->bytes_recved;
+    ret = recv(c->sockfd, c->recv_buf+c->bytes_recved, left, 0);
+    if (ret < 0) {
+        if (EAGAIN == errno || EINTR == errno) {
+            Info("%s(%d): recv(%d,%d) not ready\n", __FUNCTION__, __LINE__, c->sockfd, left);
+            return -1;
+        }
+        Error("%s(%d): recv(%d,%d) failed. error(%d): %s\n", 
+                __FUNCTION__, __LINE__, c->sockfd, left, errno, strerror(errno));
+        c->do_close(c);
+        return -2;
+    }
+    else if (0 == ret) {
+        // peer close
+        // Error("%s(%d): recv(%d,%d) return 0, peer closed\n", __FUNCTION__, __LINE__, c->sockfd, left);
+        c->do_close(c);
+        return -3;
+    }
+    else {
+        // ok get some data
+        c->active_at = now();
+        c->bytes_recved += ret;
+
+        // if a complete http package?
+        if (is_complete_http_rsp_header(c)) {
+            c->body_recv_buf = (char*)malloc(c->content_length);
+            if (NULL == c->body_recv_buf) {
+                Error("%s(%d): malloc %d bytes failed\n", 
+                        __FUNCTION__, __LINE__, c->content_length);
+                c->do_close(c);
+                return -5;
+            }
+            c->is_recvd_header = 1;
+            more = c->bytes_recved - c->head_length;
+            memcpy(c->body_recv_buf, c->recv_buf+c->head_length, more);
+            c->bytes_recved = more;
+        }
+        else if (ret == left) {
+            // wrong requst
+            Error("%s(%d): recv_buf(%d,%lu) is full, but not find http header ending, illegal request\n", 
+                    __FUNCTION__, __LINE__, c->sockfd, sizeof(c->recv_buf));
+            c->do_close(c);
+            return -6;
+        }
+    }
+    return 0;
+}
+
+static void subreq_recv_cb(EV_P_ ev_io *w, int revents) {
+    c6_conn_pt c = &(glo.cs[w->fd]);
+    if (0 == c->is_recvd_header)
+        do_subreq_recv_header(c);
+    else
+        do_subreq_recv_body(c);
+    return;
+}
+
+static void subreq_send_cb(EV_P_ ev_io *w, int revents) {
+    c6_conn_pt c = &(glo.cs[w->fd]);
+    if (0 == c->is_sent_header)
+        do_subreq_send_header(c);
+    else {
+        ev_io_stop(glo.loop, &c->write_ev);
+        ev_io_init(&c->read_ev, subreq_recv_cb, c->sockfd, EV_READ);
+        ev_io_start(glo.loop, &c->read_ev);
+    }
+    return;
+}
+
+static int do_subreq_send_header(c6_conn_pt c)
+{
+    int ret = 0;
+    long long need_send = 0;
+
+    need_send = c->head_bytes_to_send - c->bytes_sent;
+    ret = send(c->sockfd, c->send_buf+c->bytes_sent, need_send, 0);
+    if (ret < 0) {
+        if (EAGAIN == errno || EINTR == errno) {
+            Info("%s(%d): send(%d,%lld) not ready\n", __FUNCTION__, __LINE__, c->sockfd, need_send);
+            return 0;
+        }
+        Error("%s(%d): send(%d,%lld) failed. error(%d): %s\n", 
+                __FUNCTION__, __LINE__, c->sockfd, need_send, errno, strerror(errno));
+        c->do_close(c);
+        return -1;
+    }
+    else {
+        // ok get some data
+        c->active_at = now();
+        c->bytes_sent += ret;
+        if (c->bytes_sent == c->head_bytes_to_send) {
+            Info("%s(%d): %s+%d, http header is sent\n", 
+                    __FUNCTION__, __LINE__, c->access_time, now()/1000 - c->begin_ms);
+            // head over, now body
+            c->bytes_sent = 0;
+            c->is_sent_header = 1;
+        }
+    }
+    return 0;
+}
+
+static void do_subreq_close(c6_conn_pt c) {
     free_conn(c);
     return;
 }
@@ -757,7 +1069,7 @@ static void client_recv_cb(EV_P_ ev_io *w, int revents) {
             status = do_work(c);
             if (status != 200) {
                 Error("%s(%d): ret %d, failed\n", __FUNCTION__, __LINE__, status);
-                send_http_wrong_rsp(c, status);
+                send_http_simple_rsp(c, status, NULL);
             }
         }
         else if (ret == left) {
@@ -856,38 +1168,6 @@ static int do_client_send_body(c6_conn_pt c) {
             else {
                 c->do_close(c);
             }
-        }
-    }
-    return 0;
-}
-
-static int do_proxy_send_header(c6_conn_pt c)
-{
-    int ret = 0;
-    long long need_send = 0;
-
-    need_send = c->head_bytes_to_send - c->bytes_sent;
-    ret = send(c->sockfd, c->send_buf+c->bytes_sent, need_send, 0);
-    if (ret < 0) {
-        if (EAGAIN == errno || EINTR == errno) {
-            Info("%s(%d): send(%d,%lld) not ready\n", __FUNCTION__, __LINE__, c->sockfd, need_send);
-            return 0;
-        }
-        Error("%s(%d): send(%d,%lld) failed. error(%d): %s\n", 
-                __FUNCTION__, __LINE__, c->sockfd, need_send, errno, strerror(errno));
-        c->do_close(c);
-        return -1;
-    }
-    else {
-        // ok get some data
-        c->active_at = now();
-        c->bytes_sent += ret;
-        if (c->bytes_sent == c->head_bytes_to_send) {
-            Info("%s(%d): %s+%d, http header is sent\n", 
-                    __FUNCTION__, __LINE__, c->access_time, now()/1000 - c->begin_ms);
-            // head over, now body
-            c->bytes_sent = 0;
-            c->is_sent_header = 1;
         }
     }
     return 0;

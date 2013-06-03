@@ -100,7 +100,6 @@ typedef struct c6_conn_s {
 
     unsigned int head_bytes_to_send;
     unsigned int body_bytes_to_send;
-    unsigned int bytes_to_recv;
 
     // buffer for header part
     char recv_buf[header_recv_buf_size];
