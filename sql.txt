@@ -1,0 +1,18 @@
+CREATE TABLE `user` (
+        `id` int(11) NOT NULL AUTO_INCREMENT,
+        `name` varchar(64) NOT NULL DEFAULT 'user1',
+        `passwd` varchar(32) NOT NULL DEFAULT '',
+        `email` varchar(100) NOT NULL DEFAULT '',
+        `dt_create` datetime DEFAULT NULL,
+        PRIMARY KEY (`id`)
+        ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8;
+
+
+CREATE TABLE `curve` (
+        `id` int(11) NOT NULL AUTO_INCREMENT,
+        `name` varchar(64) NOT NULL DEFAULT 'curve1',
+        `user_id` int(11) NOT NULL DEFAULT '0',
+        `curve_data` text,
+        `dt_create` datetime DEFAULT NULL,
+        PRIMARY KEY (`id`)
+        ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8;
