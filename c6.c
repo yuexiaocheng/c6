@@ -502,6 +502,8 @@ static int do_work(c6_conn_pt c) {
         on_test_tc(c);
     else if ((n == sizeof("/test_sq")-1) && (0 == memcmp(cmd, "/test_sq", sizeof("/test_sq")-1)))
         on_test_sq(c);
+    else if ((n == sizeof("/upload_data")-1) && (0 == memcmp(cmd, "/upload_data", sizeof("/upload_data")-1)))
+        on_upload_data(c);
     else
         return 400;
     return 200;
