@@ -122,6 +122,7 @@ typedef struct c6_conn_s {
     int is_sent_header;
     int is_recvd_header;
     int status;
+    char method[32]; // GET, POST etc.
     bool is_keepalive;
     char real_ip[32];
 
