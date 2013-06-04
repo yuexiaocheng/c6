@@ -72,12 +72,13 @@ static int send_subreq_http_req(c6_conn_pt c);
 
 static int do_client_send_header(c6_conn_pt c);
 static int do_client_send_body(c6_conn_pt c);
-
-static void accept_cb(EV_P_ ev_io *w, int revents);
-
+static int do_client_recv_header(c6_conn_pt c);
+static int do_client_recv_body(c6_conn_pt c);
 static void client_send_cb(EV_P_ ev_io *w, int revents);
 static void client_recv_cb(EV_P_ ev_io *w, int revents);
 static void do_client_close(c6_conn_pt c);
+
+static void accept_cb(EV_P_ ev_io *w, int revents);
 
 static int do_proxy_recv_header(c6_conn_pt c);
 static int do_proxy_recv_body(c6_conn_pt c);
@@ -665,6 +666,9 @@ static bool is_complete_http_req_header(c6_conn_pt c) {
     if (NULL != json)
         c->content_length = atoi(json->valuestring);
 
+    json = cJSON_GetObjectItem_EX(c->header, "method");
+    safe_memcpy_0(c->method, sizeof(c->method)-1, json->valuestring, strlen(json->valuestring));
+
     debug = cJSON_Print(c->header);
     Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
     free(debug);
@@ -1036,28 +1040,75 @@ static void do_subreq_close(c6_conn_pt c) {
 }
 
 static void client_recv_cb(EV_P_ ev_io *w, int revents) {
+    c6_conn_pt c = &(glo.cs[w->fd]);
+    if (0 == c->is_recvd_header)
+        do_client_recv_header(c);
+    else
+        do_client_recv_body(c);
+    return;
+}
+
+static int do_client_recv_body(c6_conn_pt c) {
     int ret = 0;
     int left = 0;
     int status = 0;
-    c6_conn_pt c = &(glo.cs[w->fd]);
+    
+    left = c->content_length - c->bytes_recved;
+    ret = recv(c->sockfd, c->body_recv_buf+c->bytes_recved, left, 0);
+    if (ret < 0) {
+        if (EAGAIN == errno || EINTR == errno) {
+            Info("%s(%d): recv(%d,%d) not ready\n", __FUNCTION__, __LINE__, c->sockfd, left);
+            return -2;
+        }
+        Error("%s(%d): recv(%d,%d) failed. error(%d): %s\n", 
+                __FUNCTION__, __LINE__, c->sockfd, left, errno, strerror(errno));
+        c->do_close(c);
+        return -3 ;
+    }
+    else if (0 == ret) {
+        // peer close
+        // Error("%s(%d): recv(%d,%d) return 0, peer closed\n", __FUNCTION__, __LINE__, c->sockfd, left);
+        c->do_close(c);
+        return -4;
+    }
+    else {
+        // ok get some data
+        c->active_at = now();
+        c->bytes_recved += ret;
+        if (c->bytes_recved == c->content_length) {
+            status = do_work(c);
+            if (status != 200) {
+                Error("%s(%d): ret %d, failed\n", __FUNCTION__, __LINE__, status);
+                send_http_simple_rsp(c, status, NULL);
+            }
+        }
+    }
+    return 0;
+}
+
+static int do_client_recv_header(c6_conn_pt c) {
+    int ret = 0;
+    int left = 0;
+    int status = 0;
+    int more = 0;
 
     left = sizeof(c->recv_buf) - c->bytes_recved;
     ret = recv(c->sockfd, c->recv_buf+c->bytes_recved, left, 0);
     if (ret < 0) {
         if (EAGAIN == errno || EINTR == errno) {
             Info("%s(%d): recv(%d,%d) not ready\n", __FUNCTION__, __LINE__, c->sockfd, left);
-            return;
+            return 0;
         }
         Error("%s(%d): recv(%d,%d) failed. error(%d): %s\n", 
                 __FUNCTION__, __LINE__, c->sockfd, left, errno, strerror(errno));
         c->do_close(c);
-        return;
+        return -1;
     }
     else if (0 == ret) {
         // peer close
         // Error("%s(%d): recv(%d,%d) return 0, peer closed\n", __FUNCTION__, __LINE__, c->sockfd, left);
         c->do_close(c);
-        return;
+        return -2;
     }
     else {
         // ok get some data
@@ -1066,10 +1117,38 @@ static void client_recv_cb(EV_P_ ev_io *w, int revents) {
 
         // if a complete http package?
         if (is_complete_http_req_header(c)) {
-            status = do_work(c);
-            if (status != 200) {
-                Error("%s(%d): ret %d, failed\n", __FUNCTION__, __LINE__, status);
-                send_http_simple_rsp(c, status, NULL);
+            c->is_recvd_header = 1;
+            if (0 == memcmp(c->method, "GET", sizeof("GET")-1)) {
+                status = do_work(c);
+                if (status != 200) {
+                    Error("%s(%d): ret %d, failed\n", __FUNCTION__, __LINE__, status);
+                    send_http_simple_rsp(c, status, NULL);
+                    return -3;
+                }
+            }
+            else if (0 == memcmp(c->method, "POST", sizeof("POST")-1)) {
+                c->body_recv_buf = (char*)malloc(c->content_length);
+                if (NULL == c->body_recv_buf) {
+                    Error("%s(%d): malloc %d bytes failed\n", 
+                            __FUNCTION__, __LINE__, c->content_length);
+                    c->do_close(c);
+                    return -4;
+                }
+                more = c->bytes_recved - c->head_length;
+                memcpy(c->body_recv_buf, c->recv_buf+c->head_length, more);
+                c->bytes_recved = more;
+                if (c->bytes_recved == c->content_length) {
+                    status = do_work(c);
+                    if (status != 200) {
+                        Error("%s(%d): ret %d, failed\n", __FUNCTION__, __LINE__, status);
+                        send_http_simple_rsp(c, status, NULL);
+                        return -5;
+                    }
+                }
+            }
+            else {
+                send_http_simple_rsp(c, 501, c->method);
+                return -6;
             }
         }
         else if (ret == left) {
@@ -1079,7 +1158,7 @@ static void client_recv_cb(EV_P_ ev_io *w, int revents) {
             c->do_close(c);
         }
     }
-    return;
+    return 0;
 }
 
 static void do_client_close(c6_conn_pt c) {
