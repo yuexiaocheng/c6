@@ -69,6 +69,7 @@ static void reset_conn(c6_conn_pt c);
 static void free_conn(c6_conn_pt c);
 
 static int send_http_rsp(c6_conn_pt c, int status);
+static int send_http_nocopy_rsp(c6_conn_pt c, int status, char* out, int len);
 static int send_http_simple_rsp(c6_conn_pt c, int status, char* out);
 static int send_subreq_http_req(c6_conn_pt c);
 
@@ -435,58 +436,22 @@ static int do_subreq(c6_conn_pt c, char* host, unsigned short port) {
 
 // User-Define functions
 static int on_test(c6_conn_pt c) {
-    char* cur = NULL;
-    char first_line[1024];
     int is_tc_work = 0;
 
     if (light_worker == glo.role && is_tc_work) {
         return tc_worker_proxy(c, "127.0.0.1", glo.tc_worker_port);
     }
-
-    c->body_send_buf = (char*)malloc(16);
-    cur = c->body_send_buf;
-    cur = xcpymem(cur, "ok", sizeof("ok")-1);
-    c->content_length = cur - c->body_send_buf;
-    safe_snprintf(first_line, sizeof(first_line)-1, "HTTP/1.1 %d %s", 200, DESC_200);
-    c->rsp_header = cJSON_CreateObject();
-    cJSON_AddStringToObject(c->rsp_header, "first_line", first_line);
-    cJSON_AddStringToObject(c->rsp_header, "Content-Type", "application/json;charset=UTF-8");
-    cJSON_AddStringToObject(c->rsp_header, "Server", C6_SERVER);
-    if (c->is_keepalive)
-        cJSON_AddStringToObject(c->rsp_header, "Connection", "keep-alive");
-    else
-        cJSON_AddStringToObject(c->rsp_header, "Connection", "close");
-    cJSON_AddNumberToObject(c->rsp_header, "Content-Length", c->content_length);
-    
-    send_http_rsp(c, 200);
+    send_http_simple_rsp(c, 200, "ok");
     return 0;
 }
 
 static int on_test_tc(c6_conn_pt c) {
-    char* cur = NULL;
-    char first_line[1024];
     int is_tc_work = 1;
 
     if (light_worker == glo.role && is_tc_work) {
         return tc_worker_proxy(c, "127.0.0.1", glo.tc_worker_port);
     }
-
-    c->body_send_buf = (char*)malloc(16);
-    cur = c->body_send_buf;
-    cur = xcpymem(cur, "ok", sizeof("ok")-1);
-    c->content_length = cur - c->body_send_buf;
-    safe_snprintf(first_line, sizeof(first_line)-1, "HTTP/1.1 %d %s", 200, DESC_200);
-    c->rsp_header = cJSON_CreateObject();
-    cJSON_AddStringToObject(c->rsp_header, "first_line", first_line);
-    cJSON_AddStringToObject(c->rsp_header, "Content-Type", "application/json;charset=UTF-8");
-    cJSON_AddStringToObject(c->rsp_header, "Server", C6_SERVER);
-    if (c->is_keepalive)
-        cJSON_AddStringToObject(c->rsp_header, "Connection", "keep-alive");
-    else
-        cJSON_AddStringToObject(c->rsp_header, "Connection", "close");
-    cJSON_AddNumberToObject(c->rsp_header, "Content-Length", c->content_length);
-    
-    send_http_rsp(c, 200);
+    send_http_simple_rsp(c, 200, "ok");
     return 0;
 }
 
@@ -502,13 +467,14 @@ static int on_fc_login(c6_conn_pt c) {
     char sql[1024];
     char* email = NULL;
     char* passwd = NULL;
-    char first_line[256];
 
     // parse post body parameters
-    http_post_req_param(c->header, c->body_recv_buf, c->content_length);
-    debug = cJSON_Print(c->header);
-    Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
-    free(debug);
+    if (0 == memcmp(c->method, "POST", sizeof("POST")-1)) {
+        http_post_req_param(c->header, c->body_recv_buf, c->content_length);
+        debug = cJSON_Print(c->header);
+        Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
+        free(debug);
+    }
 
     kv = cJSON_GetObjectItem_EX(c->header, "param.kv");
     if (NULL == kv) {
@@ -536,80 +502,322 @@ static int on_fc_login(c6_conn_pt c) {
     else {
         cJSON_AddNumberToObject(root, "ret_code", ret_code);
         cJSON_AddStringToObject(root, "ret_msg", "success");
-        cJSON_AddNumberToObject(root, "task_id", mysql_insert_id(glo.db));
+        cJSON_AddNumberToObject(root, "uid", mysql_insert_id(glo.db));
     }
     out = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
 
-    c->body_send_buf = out;
-    c->content_length = strlen(out);
-    safe_snprintf(first_line, sizeof(first_line)-1, "HTTP/1.1 %d %s", 200, DESC_200);
-    c->rsp_header = cJSON_CreateObject();
-    cJSON_AddStringToObject(c->rsp_header, "first_line", first_line);
-    cJSON_AddStringToObject(c->rsp_header, "Content-Type", "application/json;charset=UTF-8");
-    cJSON_AddStringToObject(c->rsp_header, "Server", C6_SERVER);
-    if (c->is_keepalive)
-        cJSON_AddStringToObject(c->rsp_header, "Connection", "keep-alive");
-    else
-        cJSON_AddStringToObject(c->rsp_header, "Connection", "close");
-    cJSON_AddNumberToObject(c->rsp_header, "Content-Length", c->content_length);
-
-    send_http_rsp(c, 200);
-    return 0;
-}
-
-static int on_fc_reg_curve(c6_conn_pt c) {
-    char* debug = NULL;
-
-    http_post_req_param(c->header, c->body_recv_buf, c->content_length);
-    debug = cJSON_Print(c->header);
-    Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
-    free(debug);
-
+    send_http_nocopy_rsp(c, 200, out, strlen(out));
     return 0;
 }
 
 static int on_fc_info(c6_conn_pt c) {
     char* debug = NULL;
+    int ret_code = 0;
+    char* out = NULL;
+    cJSON* root = NULL, *kv = NULL, *cj = NULL, *cata = NULL, *cata_item = NULL;
+    char sql[1024];
+    int uid = 0;
+    MYSQL_RES* res = NULL;
+    int row_c = 0;
+    MYSQL_ROW row;
+    int field_c = 0;
+    MYSQL_FIELD* fields;
+    int i, j;
+    int is_tc_work = 1;
 
-    http_post_req_param(c->header, c->body_recv_buf, c->content_length);
-    debug = cJSON_Print(c->header);
-    Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
-    free(debug);
+    if (light_worker == glo.role && is_tc_work) {
+        return tc_worker_proxy(c, "127.0.0.1", glo.tc_worker_port);
+    }
 
+    if (0 == memcmp(c->method, "POST", sizeof("POST")-1)) {
+        http_post_req_param(c->header, c->body_recv_buf, c->content_length);
+        debug = cJSON_Print(c->header);
+        Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
+        free(debug);
+    }
+
+    kv = cJSON_GetObjectItem_EX(c->header, "param.kv");
+    if (NULL == kv) {
+        send_http_simple_rsp(c, 400, "parameter wrong");
+        return -1;
+    }
+    cj = cJSON_GetObjectItem_EX(kv, "uid");
+    if (NULL != cj)
+        uid = atoi(cj->valuestring);
+
+    root = cJSON_CreateObject();
+
+    safe_snprintf(sql, sizeof(sql)-1, 
+            "select c.id, c.name, c.curve_data from user as u left join curve as c on u.id=c.user_id where u.id=%d", uid); 
+    if (0 != mysql_query(glo.db, sql)) {
+        Error("%s(%d): Query failed. error: %s\n", __FUNCTION__, __LINE__, mysql_error(glo.db));
+        cJSON_AddNumberToObject(root, "ret_code", -1);
+        cJSON_AddStringToObject(root, "ret_msg", mysql_error(glo.db));
+        mysql_close(glo.db);
+        glo.db = NULL;
+    }
+    else {
+        res = mysql_store_result(glo.db);
+        fields = mysql_fetch_fields(res);
+        field_c = mysql_num_fields(res);
+        row = mysql_fetch_row(res);
+        row_c = mysql_num_rows(res);
+
+        // json
+        cJSON_AddNumberToObject(root, "ret_code", ret_code);
+        cJSON_AddStringToObject(root, "ret_msg", "success");
+        cJSON_AddItemToObject(root, "curve_list", cata=cJSON_CreateArray());
+        for (i=0; i<row_c; ++i) {
+            row = mysql_fetch_row(res);
+            if (row) {
+                cJSON_AddItemToArray(cata, cata_item=cJSON_CreateObject());
+                for (j=0; j<field_c; ++j) {
+                    if (IS_NUM(fields[j].type))
+                        cJSON_AddNumberToObject(cata_item, fields[j].name, atoi(row[j]));
+                    else
+                        cJSON_AddStringToObject(cata_item, fields[j].name, row[j]);
+                }
+            }
+        }
+    }
+    out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    send_http_nocopy_rsp(c, 200, out, strlen(out));
     return 0;
 }
 
-static int on_fc_init_curve(c6_conn_pt c) {
+static int on_fc_create_curve(c6_conn_pt c) {
     char* debug = NULL;
+    int ret_code = 0;
+    char* out = NULL;
+    cJSON* root = NULL, *kv = NULL, *cj = NULL;
+    static char sql[1024*64];
+    char* name = NULL;
+    char* data = NULL;
+    int uid = 0;
 
-    http_post_req_param(c->header, c->body_recv_buf, c->content_length);
-    debug = cJSON_Print(c->header);
-    Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
-    free(debug);
+    // parse post body parameters
+    if (0 == memcmp(c->method, "POST", sizeof("POST")-1)) {
+        http_post_req_param(c->header, c->body_recv_buf, c->content_length);
+        debug = cJSON_Print(c->header);
+        Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
+        free(debug);
+    }
 
+    kv = cJSON_GetObjectItem_EX(c->header, "param.kv");
+    if (NULL == kv) {
+        send_http_simple_rsp(c, 400, "parameter wrong");
+        return -1;
+    }
+    cj = cJSON_GetObjectItem_EX(kv, "name");
+    if (NULL != cj)
+        name = cj->valuestring;
+    cj = cJSON_GetObjectItem_EX(kv, "data");
+    if (NULL != cj)
+        data = cj->valuestring;
+
+    root = cJSON_CreateObject();
+
+    safe_snprintf(sql, sizeof(sql)-1, 
+            "insert into curve(name, user_id, curve_data, dt_create) values('%s', %d, '%s', now())", 
+            name, uid, data);
+    if (0 != mysql_query(glo.db, sql)) {
+        Error("%s(%d): Query failed. error: %s\n", __FUNCTION__, __LINE__, mysql_error(glo.db));
+        cJSON_AddNumberToObject(root, "ret_code", -1);
+        cJSON_AddStringToObject(root, "ret_msg", mysql_error(glo.db));
+        mysql_close(glo.db);
+        glo.db = NULL;
+    }
+    else {
+        cJSON_AddNumberToObject(root, "ret_code", ret_code);
+        cJSON_AddStringToObject(root, "ret_msg", "success");
+        cJSON_AddNumberToObject(root, "cvid", mysql_insert_id(glo.db));
+    }
+    out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    send_http_nocopy_rsp(c, 200, out, strlen(out));
     return 0;
 }
 
 static int on_fc_set_curve(c6_conn_pt c) {
     char* debug = NULL;
+    int ret_code = 0;
+    char* out = NULL;
+    cJSON* root = NULL, *kv = NULL, *cj = NULL, *vv = NULL, *dd = NULL, *n1 = NULL, *arr = NULL;
+    static char sql[1024*64];
+    char* val = NULL;
+    char* day = NULL;
+    int cvid = 0;
+    MYSQL_RES* res = NULL;
+    int row_c = 0;
+    MYSQL_ROW row;
+    int count = 0;
+    int is_found = 0;
+    int i;
 
-    http_post_req_param(c->header, c->body_recv_buf, c->content_length);
-    debug = cJSON_Print(c->header);
-    Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
-    free(debug);
+    // parse post body parameters
+    if (0 == memcmp(c->method, "POST", sizeof("POST")-1)) {
+        http_post_req_param(c->header, c->body_recv_buf, c->content_length);
+        debug = cJSON_Print(c->header);
+        Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
+        free(debug);
+        debug = NULL;
+    }
 
+    kv = cJSON_GetObjectItem_EX(c->header, "param.kv");
+    if (NULL == kv) {
+        send_http_simple_rsp(c, 400, "parameter wrong");
+        return -1;
+    }
+    cj = cJSON_GetObjectItem_EX(kv, "cvid");
+    if (NULL != cj)
+        cvid = atoi(cj->valuestring);
+    cj = cJSON_GetObjectItem_EX(kv, "d");
+    if (NULL != cj)
+        day = cj->valuestring;
+    cj = cJSON_GetObjectItem_EX(kv, "v");
+    if (NULL != cj)
+        val = cj->valuestring;
+
+    root = cJSON_CreateObject();
+
+    safe_snprintf(sql, sizeof(sql)-1, 
+            "select curve_data from curve where id=%d", cvid); 
+    if (0 != mysql_query(glo.db, sql)) {
+        Error("%s(%d): Query failed. error: %s\n", __FUNCTION__, __LINE__, mysql_error(glo.db));
+        cJSON_AddNumberToObject(root, "ret_code", -1);
+        cJSON_AddStringToObject(root, "ret_msg", mysql_error(glo.db));
+        mysql_close(glo.db);
+        glo.db = NULL;
+    }
+    else {
+        res = mysql_store_result(glo.db);
+        row = mysql_fetch_row(res);
+        row_c = mysql_num_rows(res);
+        if (1 == row_c) {
+            cj = cJSON_Parse(row[0]);
+            if (NULL == cj) {
+                Error("%s(%d): curve_data(%s) is not json format where cvid=%d\n", __FUNCTION__, __LINE__, row[0], cvid);
+                cJSON_AddNumberToObject(root, "ret_code", -1);
+                cJSON_AddStringToObject(root, "ret_msg", "not json format");
+            }
+            else {
+                n1 = cJSON_CreateObject();
+                cJSON_AddStringToObject(n1, "d", day);
+                cJSON_AddStringToObject(n1, "v", val);
+                
+                arr = cJSON_GetObjectItem_EX(cj, "data_list");
+                count = cJSON_GetArraySize(arr);
+                for (i=0; i<count; ++i) {
+                    vv = cJSON_GetArrayItem(arr, i);
+                    dd = cJSON_GetObjectItem_EX(vv, "d");
+                    if (0 == strcmp(day, dd->valuestring)) {
+                        // update it
+                        is_found = 1;
+                        cJSON_ReplaceItemInArray(arr, i, n1);
+                        break;
+                    }
+                }
+                if (0 == is_found) {
+                    cJSON_AddItemToArray(arr, n1);
+                    is_found = 1;
+                }
+            }
+        }
+        else {
+            Error("%s(%d): can't find curve_data where cvid=%d\n", __FUNCTION__, __LINE__, cvid);
+            cJSON_AddNumberToObject(root, "ret_code", -1);
+            cJSON_AddStringToObject(root, "ret_msg", "no data");
+        }
+    }
+    
+    if (1 == is_found) {
+        debug = cJSON_PrintUnformatted(cj);
+        safe_snprintf(sql, sizeof(sql)-1, 
+                "update curve set curve_data='%s' where id=%d", 
+                debug, cvid);
+        free(debug);
+        debug = NULL;
+        if (0 != mysql_query(glo.db, sql)) {
+            Error("%s(%d): Query failed. error: %s\n", __FUNCTION__, __LINE__, mysql_error(glo.db));
+            cJSON_AddNumberToObject(root, "ret_code", -1);
+            cJSON_AddStringToObject(root, "ret_msg", mysql_error(glo.db));
+            mysql_close(glo.db);
+            glo.db = NULL;
+        }
+        else {
+            cJSON_AddNumberToObject(root, "ret_code", ret_code);
+            cJSON_AddStringToObject(root, "ret_msg", "success");
+        }
+    }
+    out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    send_http_nocopy_rsp(c, 200, out, strlen(out));
     return 0;
 }
 
 static int on_fc_get_curve(c6_conn_pt c) {
     char* debug = NULL;
+    int ret_code = 0;
+    char* out = NULL;
+    cJSON* root = NULL, *kv = NULL, *cj = NULL;
+    char sql[1024];
+    int cvid = 0;
+    MYSQL_RES* res = NULL;
+    int row_c = 0;
+    MYSQL_ROW row;
 
-    http_post_req_param(c->header, c->body_recv_buf, c->content_length);
-    debug = cJSON_Print(c->header);
-    Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
-    free(debug);
+    if (0 == memcmp(c->method, "POST", sizeof("POST")-1)) {
+        http_post_req_param(c->header, c->body_recv_buf, c->content_length);
+        debug = cJSON_Print(c->header);
+        Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
+        free(debug);
+    }
 
+    kv = cJSON_GetObjectItem_EX(c->header, "param.kv");
+    if (NULL == kv) {
+        send_http_simple_rsp(c, 400, "parameter wrong");
+        return -1;
+    }
+    cj = cJSON_GetObjectItem_EX(kv, "cvid");
+    if (NULL != cj)
+        cvid = atoi(cj->valuestring);
+
+    root = cJSON_CreateObject();
+
+    safe_snprintf(sql, sizeof(sql)-1, 
+            "select id, name, curve_data from curve where id=%d", cvid); 
+    if (0 != mysql_query(glo.db, sql)) {
+        Error("%s(%d): Query failed. error: %s\n", __FUNCTION__, __LINE__, mysql_error(glo.db));
+        cJSON_AddNumberToObject(root, "ret_code", -1);
+        cJSON_AddStringToObject(root, "ret_msg", mysql_error(glo.db));
+        mysql_close(glo.db);
+        glo.db = NULL;
+    }
+    else {
+        res = mysql_store_result(glo.db);
+        row = mysql_fetch_row(res);
+        row_c = mysql_num_rows(res);
+        if (1 == row_c) {
+            // json
+            cJSON_AddNumberToObject(root, "ret_code", ret_code);
+            cJSON_AddStringToObject(root, "ret_msg", "success");
+            cJSON_AddNumberToObject(root, "id", atoi(row[0]));
+            cJSON_AddStringToObject(root, "name", row[1]);
+            cJSON_AddStringToObject(root, "data", row[2]);
+        }
+        else {
+            Error("%s(%d): can't find curve_data where cvid=%d\n", __FUNCTION__, __LINE__, cvid);
+            cJSON_AddNumberToObject(root, "ret_code", -1);
+            cJSON_AddStringToObject(root, "ret_msg", "no data");
+        }
+    }
+    out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    send_http_nocopy_rsp(c, 200, out, strlen(out));
     return 0;
 }
 
@@ -636,12 +844,10 @@ static int do_work(c6_conn_pt c) {
         on_test_sq(c);
     else if ((n == sizeof("/fc/login")-1) && (0 == memcmp(cmd, "/fc/login", sizeof("/fc/login")-1)))
         on_fc_login(c);
-    else if ((n == sizeof("/fc/reg_curve")-1) && (0 == memcmp(cmd, "/fc/reg_curve", sizeof("/fc/reg_curve")-1)))
-        on_fc_reg_curve(c);
     else if ((n == sizeof("/fc/info")-1) && (0 == memcmp(cmd, "/fc/info", sizeof("/fc/info")-1)))
         on_fc_info(c);
-    else if ((n == sizeof("/fc/init_curve")-1) && (0 == memcmp(cmd, "/fc/init_curve", sizeof("/fc/init_curve")-1)))
-        on_fc_init_curve(c);
+    else if ((n == sizeof("/fc/create_curve")-1) && (0 == memcmp(cmd, "/fc/create_curve", sizeof("/fc/create_curve")-1)))
+        on_fc_create_curve(c);
     else if ((n == sizeof("/fc/set_curve")-1) && (0 == memcmp(cmd, "/fc/set_curve", sizeof("/fc/set_curve")-1)))
         on_fc_set_curve(c);
     else if ((n == sizeof("/fc/get_curve")-1) && (0 == memcmp(cmd, "/fc/get_curve", sizeof("/fc/get_curve")-1)))
@@ -687,6 +893,26 @@ static int send_http_rsp(c6_conn_pt c, int status) {
 
     ev_io_init(&c->write_ev, client_send_cb, c->sockfd, EV_WRITE);
     ev_io_start(glo.loop, &c->write_ev);
+    return 0;
+}
+
+static int send_http_nocopy_rsp(c6_conn_pt c, int status, char* out, int len) {
+    char first_line[256];
+
+    c->body_send_buf = out;
+    c->content_length = len;
+    safe_snprintf(first_line, sizeof(first_line)-1, "HTTP/1.1 %d %s", 200, DESC_200);
+    c->rsp_header = cJSON_CreateObject();
+    cJSON_AddStringToObject(c->rsp_header, "first_line", first_line);
+    cJSON_AddStringToObject(c->rsp_header, "Content-Type", "application/json;charset=UTF-8");
+    cJSON_AddStringToObject(c->rsp_header, "Server", C6_SERVER);
+    if (c->is_keepalive)
+        cJSON_AddStringToObject(c->rsp_header, "Connection", "keep-alive");
+    else
+        cJSON_AddStringToObject(c->rsp_header, "Connection", "close");
+    cJSON_AddNumberToObject(c->rsp_header, "Content-Length", c->content_length);
+
+    send_http_rsp(c, 200);
     return 0;
 }
 
