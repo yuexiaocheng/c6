@@ -646,6 +646,7 @@ static int on_fc_set_curve(c6_conn_pt c) {
     int ret_code = 0;
     char* out = NULL;
     cJSON* root = NULL, *kv = NULL, *cj = NULL, *vv = NULL, *dd = NULL, *n1 = NULL, *arr = NULL;
+    cJSON* cc = NULL;
     static char sql[1024*64];
     char* val = NULL;
     char* day = NULL;
@@ -697,8 +698,8 @@ static int on_fc_set_curve(c6_conn_pt c) {
         row = mysql_fetch_row(res);
         row_c = mysql_num_rows(res);
         if (1 == row_c) {
-            cj = cJSON_Parse(row[0]);
-            if (NULL == cj) {
+            cc = cJSON_Parse(row[0]);
+            if (NULL == cc) {
                 Error("%s(%d): curve_data(%s) is not json format where cvid=%d\n", __FUNCTION__, __LINE__, row[0], cvid);
                 cJSON_AddNumberToObject(root, "ret_code", -1);
                 cJSON_AddStringToObject(root, "ret_msg", "not json format");
@@ -708,7 +709,7 @@ static int on_fc_set_curve(c6_conn_pt c) {
                 cJSON_AddStringToObject(n1, "d", day);
                 cJSON_AddStringToObject(n1, "v", val);
                 
-                arr = cJSON_GetObjectItem_EX(cj, "data_list");
+                arr = cJSON_GetObjectItem_EX(cc, "data_list");
                 count = cJSON_GetArraySize(arr);
                 for (i=0; i<count; ++i) {
                     vv = cJSON_GetArrayItem(arr, i);
@@ -734,7 +735,7 @@ static int on_fc_set_curve(c6_conn_pt c) {
     }
     
     if (1 == is_found) {
-        debug = cJSON_PrintUnformatted(cj);
+        debug = cJSON_PrintUnformatted(cc);
         safe_snprintf(sql, sizeof(sql)-1, 
                 "update curve set curve_data='%s' where id=%d", 
                 debug, cvid);
@@ -754,6 +755,7 @@ static int on_fc_set_curve(c6_conn_pt c) {
     }
     out = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
+    cJSON_Delete(cc);
 
     send_http_nocopy_rsp(c, 200, out, strlen(out));
     return 0;
