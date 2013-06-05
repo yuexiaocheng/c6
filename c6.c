@@ -58,6 +58,8 @@ typedef struct {
 
 CONFIG glo;
 
+static MYSQL* connect_mysql(db_info_s* di);
+
 static long long now(void);
 static void fill_access_time(c6_conn_pt c);
 
@@ -492,8 +494,137 @@ static int on_test_sq(c6_conn_pt c) {
     return do_subreq(c, "www.baidu.com", 80);
 }
 
+static int on_fc_login(c6_conn_pt c) {
+    char* debug = NULL;
+    int ret_code = 0;
+    char* out = NULL;
+    cJSON* root = NULL, *kv = NULL, *cj = NULL;
+    char sql[1024];
+    char* email = NULL;
+    char* passwd = NULL;
+    char first_line[256];
+
+    // parse post body parameters
+    http_post_req_param(c->header, c->body_recv_buf, c->content_length);
+    debug = cJSON_Print(c->header);
+    Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
+    free(debug);
+
+    kv = cJSON_GetObjectItem_EX(c->header, "param.kv");
+    if (NULL == kv) {
+        send_http_simple_rsp(c, 400, "parameter wrong");
+        return -1;
+    }
+    cj = cJSON_GetObjectItem_EX(kv, "e");
+    if (NULL != cj)
+        email = cj->valuestring;
+    cj = cJSON_GetObjectItem_EX(kv, "p");
+    if (NULL != cj)
+        passwd = cj->valuestring;
+
+    root = cJSON_CreateObject();
+
+    safe_snprintf(sql, sizeof(sql)-1, "insert into user(passwd, email, dt_create) values('%s', '%s', now())", 
+            passwd, email);
+    if (0 != mysql_query(glo.db, sql)) {
+        Error("%s(%d): Query failed. error: %s\n", __FUNCTION__, __LINE__, mysql_error(glo.db));
+        cJSON_AddNumberToObject(root, "ret_code", -1);
+        cJSON_AddStringToObject(root, "ret_msg", mysql_error(glo.db));
+        mysql_close(glo.db);
+        glo.db = NULL;
+    }
+    else {
+        cJSON_AddNumberToObject(root, "ret_code", ret_code);
+        cJSON_AddStringToObject(root, "ret_msg", "success");
+        cJSON_AddNumberToObject(root, "task_id", mysql_insert_id(glo.db));
+    }
+    out = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+
+    c->body_send_buf = out;
+    c->content_length = strlen(out);
+    safe_snprintf(first_line, sizeof(first_line)-1, "HTTP/1.1 %d %s", 200, DESC_200);
+    c->rsp_header = cJSON_CreateObject();
+    cJSON_AddStringToObject(c->rsp_header, "first_line", first_line);
+    cJSON_AddStringToObject(c->rsp_header, "Content-Type", "application/json;charset=UTF-8");
+    cJSON_AddStringToObject(c->rsp_header, "Server", C6_SERVER);
+    if (c->is_keepalive)
+        cJSON_AddStringToObject(c->rsp_header, "Connection", "keep-alive");
+    else
+        cJSON_AddStringToObject(c->rsp_header, "Connection", "close");
+    cJSON_AddNumberToObject(c->rsp_header, "Content-Length", c->content_length);
+
+    send_http_rsp(c, 200);
+    return 0;
+}
+
+static int on_fc_reg_curve(c6_conn_pt c) {
+    char* debug = NULL;
+
+    http_post_req_param(c->header, c->body_recv_buf, c->content_length);
+    debug = cJSON_Print(c->header);
+    Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
+    free(debug);
+
+    return 0;
+}
+
+static int on_fc_info(c6_conn_pt c) {
+    char* debug = NULL;
+
+    http_post_req_param(c->header, c->body_recv_buf, c->content_length);
+    debug = cJSON_Print(c->header);
+    Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
+    free(debug);
+
+    return 0;
+}
+
+static int on_fc_init_curve(c6_conn_pt c) {
+    char* debug = NULL;
+
+    http_post_req_param(c->header, c->body_recv_buf, c->content_length);
+    debug = cJSON_Print(c->header);
+    Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
+    free(debug);
+
+    return 0;
+}
+
+static int on_fc_set_curve(c6_conn_pt c) {
+    char* debug = NULL;
+
+    http_post_req_param(c->header, c->body_recv_buf, c->content_length);
+    debug = cJSON_Print(c->header);
+    Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
+    free(debug);
+
+    return 0;
+}
+
+static int on_fc_get_curve(c6_conn_pt c) {
+    char* debug = NULL;
+
+    http_post_req_param(c->header, c->body_recv_buf, c->content_length);
+    debug = cJSON_Print(c->header);
+    Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
+    free(debug);
+
+    return 0;
+}
+
 static int do_work(c6_conn_pt c) {
     write_access_log(c);
+
+    if (NULL == glo.db) {
+        glo.db = connect_mysql(&glo.db_info);
+    }
+    else if (0 == mysql_ping(glo.db)) {
+        mysql_close(glo.db);
+        glo.db = connect_mysql(&glo.db_info);
+    }
+    else {
+    }
     
     char* cmd = cJSON_GetObjectItem_EX(c->header, "cmd")->valuestring;
     int n = strlen(cmd);
@@ -503,8 +634,18 @@ static int do_work(c6_conn_pt c) {
         on_test_tc(c);
     else if ((n == sizeof("/test_sq")-1) && (0 == memcmp(cmd, "/test_sq", sizeof("/test_sq")-1)))
         on_test_sq(c);
-    else if ((n == sizeof("/upload_data")-1) && (0 == memcmp(cmd, "/upload_data", sizeof("/upload_data")-1)))
-        on_upload_data(c);
+    else if ((n == sizeof("/fc/login")-1) && (0 == memcmp(cmd, "/fc/login", sizeof("/fc/login")-1)))
+        on_fc_login(c);
+    else if ((n == sizeof("/fc/reg_curve")-1) && (0 == memcmp(cmd, "/fc/reg_curve", sizeof("/fc/reg_curve")-1)))
+        on_fc_reg_curve(c);
+    else if ((n == sizeof("/fc/info")-1) && (0 == memcmp(cmd, "/fc/info", sizeof("/fc/info")-1)))
+        on_fc_info(c);
+    else if ((n == sizeof("/fc/init_curve")-1) && (0 == memcmp(cmd, "/fc/init_curve", sizeof("/fc/init_curve")-1)))
+        on_fc_init_curve(c);
+    else if ((n == sizeof("/fc/set_curve")-1) && (0 == memcmp(cmd, "/fc/set_curve", sizeof("/fc/set_curve")-1)))
+        on_fc_set_curve(c);
+    else if ((n == sizeof("/fc/get_curve")-1) && (0 == memcmp(cmd, "/fc/get_curve", sizeof("/fc/get_curve")-1)))
+        on_fc_get_curve(c);
     else
         return 400;
     return 200;

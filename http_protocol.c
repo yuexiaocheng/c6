@@ -55,6 +55,61 @@ parse_failed:
     return NULL;
 }
 
+void http_post_req_param(cJSON* header, const char* line, unsigned int len) {
+    char* p3 = NULL;
+    char* e2 = NULL;
+    char* p4 = NULL, *p5 = NULL;
+    cJSON* param = NULL, *param_kv = NULL;
+    char* p = NULL;
+    char key[256];
+    char value[256];
+
+    char* l = (char*)malloc(len+1);
+    p = l;
+    p = xcpymem(p, line, len);
+    *p++ = '\0';
+
+    p3 = l;
+    e2 = p3 + len;
+
+    if (NULL == (param = cJSON_GetObjectItem_EX(header, "param"))) {
+        cJSON_AddItemToObject(header, "param", param = cJSON_CreateObject());
+        cJSON_AddStringToObject(param, "raw_param", l);
+        cJSON_AddItemToObject(param, "kv", param_kv=cJSON_CreateObject());
+    }
+    else {
+        if (NULL == (param_kv = cJSON_GetObjectItem_EX(param, "kv")))
+            cJSON_AddItemToObject(param, "kv", param_kv=cJSON_CreateObject());
+    }
+    do {
+        p4 = memchr(p3, '&', e2-p3);
+        if (NULL == p4) {
+            // just one parameter
+            p4 = memchr(p3, '=', e2-p3);
+            if (NULL == p4) {
+                // only a single string, we take it as a key without value
+                // cJSON_AddStringToObject(param_kv, p3, "");
+            }
+            else {
+                safe_memcpy_0(key, sizeof(key)-1, p3, p4-p3);
+                p4 += 1; // `=`
+                cJSON_AddStringToObject(param_kv, key, p4);
+            }
+            break;
+        }
+        else {
+            // find `&`
+            p5 = memchr(p3, '=', p4-p3);
+            safe_memcpy_0(key, sizeof(key)-1, p3, p5-p3);
+            safe_memcpy_0(value, sizeof(value)-1, p5+1, p4-p5-1);
+            cJSON_AddStringToObject(param_kv, key, value);
+            p3 = p4 + 1;
+        }
+    } while(1);
+    free(l);
+    l = NULL;
+}
+
 // GET /m/cskz_61445663.html?rec=4&tt=2 HTTP/1.1\r\n
 // method: GET
 // uri: /m/cskz_61445663.html?rec=4&tt=2

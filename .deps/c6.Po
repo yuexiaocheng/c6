@@ -50,8 +50,14 @@ c6.o: c6.c c6.h /usr/include/stdio.h /usr/include/features.h \
  /usr/include/sys/time.h \
  /usr/lib/gcc/x86_64-redhat-linux/4.4.7/include/stdbool.h \
  /usr/include/sys/sendfile.h /usr/include/wait.h /usr/include/sys/wait.h \
- http_protocol.h /usr/include/ctype.h xlog.h /usr/include/zlib.h \
- /usr/include/zconf.h cJSON.h dyn_buf.h include/ev.h \
+ http_protocol.h /usr/include/ctype.h xlog.h /usr/include/openssl/bio.h \
+ /usr/include/openssl/crypto.h /usr/include/openssl/stack.h \
+ /usr/include/openssl/safestack.h /usr/include/openssl/opensslv.h \
+ /usr/include/openssl/ossl_typ.h /usr/include/openssl/symhacks.h \
+ /usr/include/openssl/evp.h /usr/include/openssl/fips.h \
+ /usr/include/openssl/objects.h /usr/include/openssl/obj_mac.h \
+ /usr/include/openssl/asn1.h /usr/include/openssl/bn.h \
+ /usr/include/zlib.h /usr/include/zconf.h cJSON.h dyn_buf.h include/ev.h \
  /usr/include/mysql/mysql.h /usr/include/mysql/mysql_version.h \
  /usr/include/mysql/mysql_com.h /usr/include/mysql/mysql_time.h \
  /usr/include/mysql/my_list.h /usr/include/mysql/typelib.h \
@@ -282,6 +288,32 @@ http_protocol.h:
 /usr/include/ctype.h:
 
 xlog.h:
+
+/usr/include/openssl/bio.h:
+
+/usr/include/openssl/crypto.h:
+
+/usr/include/openssl/stack.h:
+
+/usr/include/openssl/safestack.h:
+
+/usr/include/openssl/opensslv.h:
+
+/usr/include/openssl/ossl_typ.h:
+
+/usr/include/openssl/symhacks.h:
+
+/usr/include/openssl/evp.h:
+
+/usr/include/openssl/fips.h:
+
+/usr/include/openssl/objects.h:
+
+/usr/include/openssl/obj_mac.h:
+
+/usr/include/openssl/asn1.h:
+
+/usr/include/openssl/bn.h:
 
 /usr/include/zlib.h:
 

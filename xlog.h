@@ -24,6 +24,8 @@ extern "C"
 #include <signal.h>
 #include <string.h>
 #include <ctype.h>
+#include <openssl/bio.h>
+#include <openssl/evp.h>
 #include "zlib.h"
 
 int xlog_init(const char* filename);
@@ -54,6 +56,8 @@ int set_rlimit(size_t limit);
 
 int def(FILE *source, FILE *dest, int level);
 void zerr(int ret);
+
+int base64_decode(char *str, int str_len, char *decode, int decode_buffer_len);
 
 #define safe_memcpy(dest, dest_sz, src, src_sz) \
     memncpy(dest, dest_sz, src, src_sz, __FUNCTION__, __LINE__, 0)

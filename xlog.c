@@ -534,3 +534,16 @@ int set_rlimit(size_t limit) {
     return 0;
 }
 
+int base64_decode(char *str, int str_len, char *decode, int decode_buffer_len) {
+    int len = 0;
+    BIO *b64 = NULL, *bmem = NULL;
+
+    b64 = BIO_new(BIO_f_base64());
+    bmem = BIO_new_mem_buf(str, str_len);
+    bmem = BIO_push(b64, bmem);
+    len = BIO_read(bmem, decode, str_len);
+    decode[len] = 0;
+    BIO_free_all(bmem);
+    return 0;
+}
+
