@@ -467,6 +467,9 @@ static int on_fc_login(c6_conn_pt c) {
     char sql[1024];
     char* email = NULL;
     char* passwd = NULL;
+    MYSQL_RES* res = NULL;
+    int row_c = 0;
+    MYSQL_ROW row;
 
     // parse post body parameters
     if (0 == memcmp(c->method, "POST", sizeof("POST")-1)) {
@@ -489,9 +492,10 @@ static int on_fc_login(c6_conn_pt c) {
         passwd = cj->valuestring;
 
     root = cJSON_CreateObject();
-
-    safe_snprintf(sql, sizeof(sql)-1, "insert into user(passwd, email, dt_create) values('%s', '%s', now())", 
+    // check if exist or not
+    safe_snprintf(sql, sizeof(sql)-1, "select id from user where passwd='%s' and email='%s'", 
             passwd, email);
+    Info("%s(%d): %s\n", __FUNCTION__, __LINE__, sql);
     if (0 != mysql_query(glo.db, sql)) {
         Error("%s(%d): Query failed. error: %s\n", __FUNCTION__, __LINE__, mysql_error(glo.db));
         cJSON_AddNumberToObject(root, "ret_code", -1);
@@ -500,9 +504,33 @@ static int on_fc_login(c6_conn_pt c) {
         glo.db = NULL;
     }
     else {
-        cJSON_AddNumberToObject(root, "ret_code", ret_code);
-        cJSON_AddStringToObject(root, "ret_msg", "success");
-        cJSON_AddNumberToObject(root, "uid", mysql_insert_id(glo.db));
+        res = mysql_store_result(glo.db);
+        row = mysql_fetch_row(res);
+        row_c = mysql_num_rows(res);
+        if (1 == row_c) {
+            // find, return id
+            cJSON_AddNumberToObject(root, "ret_code", ret_code);
+            cJSON_AddStringToObject(root, "ret_msg", "success");
+            cJSON_AddNumberToObject(root, "uid", atoi(row[0]));
+        }
+        else {
+            // don't find, new user, insert it
+            safe_snprintf(sql, sizeof(sql)-1, "insert into user(passwd, email, dt_create) values('%s', '%s', now())", 
+                    passwd, email);
+            Info("%s(%d): %s\n", __FUNCTION__, __LINE__, sql);
+            if (0 != mysql_query(glo.db, sql)) {
+                Error("%s(%d): Query failed. error: %s\n", __FUNCTION__, __LINE__, mysql_error(glo.db));
+                cJSON_AddNumberToObject(root, "ret_code", -1);
+                cJSON_AddStringToObject(root, "ret_msg", mysql_error(glo.db));
+                mysql_close(glo.db);
+                glo.db = NULL;
+            }
+            else {
+                cJSON_AddNumberToObject(root, "ret_code", ret_code);
+                cJSON_AddStringToObject(root, "ret_msg", "success");
+                cJSON_AddNumberToObject(root, "uid", mysql_insert_id(glo.db));
+            }
+        }
     }
     out = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -550,6 +578,7 @@ static int on_fc_info(c6_conn_pt c) {
 
     safe_snprintf(sql, sizeof(sql)-1, 
             "select c.id, c.name, c.curve_data from user as u left join curve as c on u.id=c.user_id where u.id=%d", uid); 
+    Info("%s(%d): %s\n", __FUNCTION__, __LINE__, sql);
     if (0 != mysql_query(glo.db, sql)) {
         Error("%s(%d): Query failed. error: %s\n", __FUNCTION__, __LINE__, mysql_error(glo.db));
         cJSON_AddNumberToObject(root, "ret_code", -1);
@@ -622,6 +651,7 @@ static int on_fc_create_curve(c6_conn_pt c) {
     safe_snprintf(sql, sizeof(sql)-1, 
             "insert into curve(name, user_id, curve_data, dt_create) values('%s', %d, '%s', now())", 
             name, uid, data);
+    Info("%s(%d): %s\n", __FUNCTION__, __LINE__, sql);
     if (0 != mysql_query(glo.db, sql)) {
         Error("%s(%d): Query failed. error: %s\n", __FUNCTION__, __LINE__, mysql_error(glo.db));
         cJSON_AddNumberToObject(root, "ret_code", -1);
@@ -685,7 +715,8 @@ static int on_fc_set_curve(c6_conn_pt c) {
     root = cJSON_CreateObject();
 
     safe_snprintf(sql, sizeof(sql)-1, 
-            "select curve_data from curve where id=%d", cvid); 
+            "select curve_data from curve where id=%d", cvid);
+    Info("%s(%d): %s\n", __FUNCTION__, __LINE__, sql);
     if (0 != mysql_query(glo.db, sql)) {
         Error("%s(%d): Query failed. error: %s\n", __FUNCTION__, __LINE__, mysql_error(glo.db));
         cJSON_AddNumberToObject(root, "ret_code", -1);
@@ -739,6 +770,7 @@ static int on_fc_set_curve(c6_conn_pt c) {
         safe_snprintf(sql, sizeof(sql)-1, 
                 "update curve set curve_data='%s' where id=%d", 
                 debug, cvid);
+        Info("%s(%d): %s\n", __FUNCTION__, __LINE__, sql);
         free(debug);
         debug = NULL;
         if (0 != mysql_query(glo.db, sql)) {
@@ -791,7 +823,8 @@ static int on_fc_get_curve(c6_conn_pt c) {
     root = cJSON_CreateObject();
 
     safe_snprintf(sql, sizeof(sql)-1, 
-            "select id, name, curve_data from curve where id=%d", cvid); 
+            "select id, name, curve_data from curve where id=%d", cvid);
+    Info("%s(%d): %s\n", __FUNCTION__, __LINE__, sql);
     if (0 != mysql_query(glo.db, sql)) {
         Error("%s(%d): Query failed. error: %s\n", __FUNCTION__, __LINE__, mysql_error(glo.db));
         cJSON_AddNumberToObject(root, "ret_code", -1);
