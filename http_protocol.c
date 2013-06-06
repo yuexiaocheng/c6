@@ -55,6 +55,61 @@ parse_failed:
     return NULL;
 }
 
+void http_parse_cookie(cJSON* header, const char* line, unsigned int len) {
+    char* p3 = NULL;
+    char* e2 = NULL;
+    char* p4 = NULL, *p5 = NULL;
+    cJSON* cookie_kv = NULL;
+    char* p = NULL;
+    char key[256];
+    char value[2048];
+
+    char* l = (char*)malloc(len+1);
+    p = l;
+    p = xcpymem(p, line, len);
+    *p++ = '\0';
+
+    p3 = l;
+    e2 = p3 + len;
+
+    cJSON_AddItemToObject(header, "cookie_kv", cookie_kv = cJSON_CreateObject());
+    do {
+        p4 = memchr(p3, ';', e2-p3);
+        if (NULL == p4) {
+            // just one parameter
+            p4 = memchr(p3, '=', e2-p3);
+            if (NULL == p4) {
+                // only a single string, we take it as a key without value
+                // cJSON_AddStringToObject(cookie_kv, p3, "");
+            }
+            else {
+                while(isspace(*p3))
+                    p3++;
+                safe_memcpy_0(key, sizeof(key)-1, p3, p4-p3);
+                p4 += 1; // `=`
+                cJSON_AddStringToObject(cookie_kv, key, p4);
+            }
+            break;
+        }
+        else {
+            // find `;`
+            p5 = memchr(p3, '=', p4-p3);
+            if (NULL == p5) {
+                p3 = p4 + 1;
+                continue;
+            }
+            while(isspace(*p3))
+                p3++;
+            safe_memcpy_0(key, sizeof(key)-1, p3, p5-p3);
+            safe_memcpy_0(value, sizeof(value)-1, p5+1, p4-p5-1);
+            cJSON_AddStringToObject(cookie_kv, key, value);
+            p3 = p4 + 1;
+        }
+    } while(1);
+    free(l);
+    l = NULL;
+}
+
 void http_post_req_param(cJSON* header, const char* line, unsigned int len) {
     char* p3 = NULL;
     char* e2 = NULL;
@@ -62,7 +117,7 @@ void http_post_req_param(cJSON* header, const char* line, unsigned int len) {
     cJSON* param = NULL, *param_kv = NULL;
     char* p = NULL;
     char key[256];
-    char value[256];
+    char value[2048];
 
     char* l = (char*)malloc(len+1);
     p = l;
@@ -100,6 +155,10 @@ void http_post_req_param(cJSON* header, const char* line, unsigned int len) {
         else {
             // find `&`
             p5 = memchr(p3, '=', p4-p3);
+            if (NULL == p5) {
+                p3 = p4 + 1;
+                continue;
+            }
             safe_memcpy_0(key, sizeof(key)-1, p3, p5-p3);
             safe_memcpy_0(value, sizeof(value)-1, p5+1, p4-p5-1);
             cJSON_AddStringToObject(param_kv, key, value);
@@ -125,7 +184,7 @@ static cJSON* http_request_first_line(const char* line, unsigned int len) {
     char* e2 = NULL, *p1 = NULL, *p2 = NULL, *p3 = NULL, *p4 = NULL, *p5 = NULL;
     char longest[1024];
     char key[256];
-    char value[256];
+    char value[2048];
 
     xurl_decode((char*)line, len);
 
@@ -218,7 +277,7 @@ static void http_other_lines(cJSON* header, const char* other_lines, unsigned in
     char* p3 = NULL;
     char* e = (char*)other_lines + len;
     char key[256];
-    char value[1024];
+    char value[2048];
 
     do {
         p2 = memstr(p1, e-p1, "\r\n", 2);

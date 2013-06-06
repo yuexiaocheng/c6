@@ -1073,6 +1073,10 @@ static bool is_complete_http_req_header(c6_conn_pt c) {
     json = cJSON_GetObjectItem_EX(c->header, "method");
     safe_memcpy_0(c->method, sizeof(c->method)-1, json->valuestring, strlen(json->valuestring));
 
+    json = cJSON_GetObjectItem_EX(c->header, "Cookie");
+    if (NULL != json)
+        http_parse_cookie(c->header, json->valuestring, strlen(json->valuestring));
+
     debug = cJSON_Print(c->header);
     Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);
     free(debug);
@@ -1114,6 +1118,10 @@ static bool is_complete_http_rsp_header(c6_conn_pt c) {
     json = cJSON_GetObjectItem_EX(c->rsp_header, "Content-Length");
     if (NULL != json)
         c->content_length = atoi(json->valuestring);
+
+    json = cJSON_GetObjectItem_EX(c->header, "Cookie");
+    if (NULL != json)
+        http_parse_cookie(c->header, json->valuestring, strlen(json->valuestring));
 
     debug = cJSON_Print(c->rsp_header);
     Info("%s(%d): \n%s\n", __FUNCTION__, __LINE__, debug);

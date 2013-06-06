@@ -48,6 +48,7 @@ void http_create_request_header(cJSON* req, dyn_buf* buff);
 void http_create_rsponse_header(cJSON* rsp, dyn_buf* buff);
 cJSON* cJSON_GetObjectItem_EX(cJSON* json, const char* format); // root.level1.level2.key
 void http_post_req_param(cJSON* header, const char* line, unsigned int len);
+void http_parse_cookie(cJSON* header, const char* line, unsigned int len);
 #ifdef __cplusplus
 }
 #endif
