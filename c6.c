@@ -479,7 +479,7 @@ static int on_fc_login(c6_conn_pt c) {
         free(debug);
     }
 
-    kv = cJSON_GetObjectItem_EX(c->header, "param.kv");
+    kv = cJSON_GetObjectItem_EX(c->header, "param_kv");
     if (NULL == kv) {
         send_http_simple_rsp(c, 400, "parameter wrong");
         return -1;
@@ -565,7 +565,7 @@ static int on_fc_info(c6_conn_pt c) {
         free(debug);
     }
 
-    kv = cJSON_GetObjectItem_EX(c->header, "param.kv");
+    kv = cJSON_GetObjectItem_EX(c->header, "param_kv");
     if (NULL == kv) {
         send_http_simple_rsp(c, 400, "parameter wrong");
         return -1;
@@ -620,7 +620,7 @@ static int on_fc_create_curve(c6_conn_pt c) {
     char* debug = NULL;
     int ret_code = 0;
     char* out = NULL;
-    cJSON* root = NULL, *kv = NULL, *cj = NULL;
+    cJSON* root = NULL, *kv = NULL, *cj = NULL, *cv = NULL;
     static char sql[1024*64];
     char* name = NULL;
     char* data = NULL;
@@ -634,7 +634,14 @@ static int on_fc_create_curve(c6_conn_pt c) {
         free(debug);
     }
 
-    kv = cJSON_GetObjectItem_EX(c->header, "param.kv");
+    cv = cJSON_GetObjectItem_EX(c->header, "cookie_kv.uid");
+    if (NULL == cv) {
+        send_http_simple_rsp(c, 403, "not login");
+        return -1;
+    }
+    uid = atoi(cv->valuestring);
+
+    kv = cJSON_GetObjectItem_EX(c->header, "param_kv");
     if (NULL == kv) {
         send_http_simple_rsp(c, 400, "parameter wrong");
         return -1;
@@ -676,11 +683,12 @@ static int on_fc_set_curve(c6_conn_pt c) {
     int ret_code = 0;
     char* out = NULL;
     cJSON* root = NULL, *kv = NULL, *cj = NULL, *vv = NULL, *dd = NULL, *n1 = NULL, *arr = NULL;
-    cJSON* cc = NULL;
+    cJSON* cc = NULL, *cv = NULL;
     static char sql[1024*64];
     char* val = NULL;
     char* day = NULL;
     int cvid = 0;
+    int uid = 0;
     MYSQL_RES* res = NULL;
     int row_c = 0;
     MYSQL_ROW row;
@@ -696,8 +704,15 @@ static int on_fc_set_curve(c6_conn_pt c) {
         free(debug);
         debug = NULL;
     }
+    
+    cv = cJSON_GetObjectItem_EX(c->header, "cookie_kv.uid");
+    if (NULL == cv) {
+        send_http_simple_rsp(c, 403, "not login");
+        return -1;
+    }
+    uid = atoi(cv->valuestring);
 
-    kv = cJSON_GetObjectItem_EX(c->header, "param.kv");
+    kv = cJSON_GetObjectItem_EX(c->header, "param_kv");
     if (NULL == kv) {
         send_http_simple_rsp(c, 400, "parameter wrong");
         return -1;
@@ -715,7 +730,7 @@ static int on_fc_set_curve(c6_conn_pt c) {
     root = cJSON_CreateObject();
 
     safe_snprintf(sql, sizeof(sql)-1, 
-            "select curve_data from curve where id=%d", cvid);
+            "select curve_data from curve where id=%d and user_id=%d", cvid, uid);
     Info("%s(%d): %s\n", __FUNCTION__, __LINE__, sql);
     if (0 != mysql_query(glo.db, sql)) {
         Error("%s(%d): Query failed. error: %s\n", __FUNCTION__, __LINE__, mysql_error(glo.db));
@@ -768,8 +783,8 @@ static int on_fc_set_curve(c6_conn_pt c) {
     if (1 == is_found) {
         debug = cJSON_PrintUnformatted(cc);
         safe_snprintf(sql, sizeof(sql)-1, 
-                "update curve set curve_data='%s' where id=%d", 
-                debug, cvid);
+                "update curve set curve_data='%s' where id=%d and user_id=%d", 
+                debug, cvid, uid);
         Info("%s(%d): %s\n", __FUNCTION__, __LINE__, sql);
         free(debug);
         debug = NULL;
@@ -797,9 +812,10 @@ static int on_fc_get_curve(c6_conn_pt c) {
     char* debug = NULL;
     int ret_code = 0;
     char* out = NULL;
-    cJSON* root = NULL, *kv = NULL, *cj = NULL;
+    cJSON* root = NULL, *kv = NULL, *cj = NULL, *cv = NULL;
     char sql[1024];
     int cvid = 0;
+    int uid = 0;
     MYSQL_RES* res = NULL;
     int row_c = 0;
     MYSQL_ROW row;
@@ -811,7 +827,14 @@ static int on_fc_get_curve(c6_conn_pt c) {
         free(debug);
     }
 
-    kv = cJSON_GetObjectItem_EX(c->header, "param.kv");
+    cv = cJSON_GetObjectItem_EX(c->header, "cookie_kv.uid");
+    if (NULL == cv) {
+        send_http_simple_rsp(c, 403, "not login");
+        return -1;
+    }
+    uid = atoi(cv->valuestring);
+
+    kv = cJSON_GetObjectItem_EX(c->header, "param_kv");
     if (NULL == kv) {
         send_http_simple_rsp(c, 400, "parameter wrong");
         return -1;
@@ -823,7 +846,7 @@ static int on_fc_get_curve(c6_conn_pt c) {
     root = cJSON_CreateObject();
 
     safe_snprintf(sql, sizeof(sql)-1, 
-            "select id, name, curve_data from curve where id=%d", cvid);
+            "select id, name, curve_data from curve where id=%d and user_id=%d", cvid, uid);
     Info("%s(%d): %s\n", __FUNCTION__, __LINE__, sql);
     if (0 != mysql_query(glo.db, sql)) {
         Error("%s(%d): Query failed. error: %s\n", __FUNCTION__, __LINE__, mysql_error(glo.db));

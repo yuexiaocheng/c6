@@ -76,7 +76,7 @@ void http_parse_cookie(cJSON* header, const char* line, unsigned int len) {
     do {
         p4 = memchr(p3, ';', e2-p3);
         if (NULL == p4) {
-            // just one parameter
+            // just one
             p4 = memchr(p3, '=', e2-p3);
             if (NULL == p4) {
                 // only a single string, we take it as a key without value
@@ -128,13 +128,12 @@ void http_post_req_param(cJSON* header, const char* line, unsigned int len) {
     e2 = p3 + len;
 
     if (NULL == (param = cJSON_GetObjectItem_EX(header, "param"))) {
-        cJSON_AddItemToObject(header, "param", param = cJSON_CreateObject());
-        cJSON_AddStringToObject(param, "raw_param", l);
-        cJSON_AddItemToObject(param, "kv", param_kv=cJSON_CreateObject());
+        cJSON_AddStringToObject(header, "param", l);
+        cJSON_AddItemToObject(header, "param_kv", param_kv=cJSON_CreateObject());
     }
     else {
-        if (NULL == (param_kv = cJSON_GetObjectItem_EX(param, "kv")))
-            cJSON_AddItemToObject(param, "kv", param_kv=cJSON_CreateObject());
+        if (NULL == (param_kv = cJSON_GetObjectItem_EX(header, "param_kv")))
+            cJSON_AddItemToObject(header, "param_kv", param_kv=cJSON_CreateObject());
     }
     do {
         p4 = memchr(p3, '&', e2-p3);
@@ -178,7 +177,6 @@ void http_post_req_param(cJSON* header, const char* line, unsigned int len) {
 // const char* p = "GET /m/cskz_61445663.html?rec=4&tt=2 HTTP/1.1\r\n";
 static cJSON* http_request_first_line(const char* line, unsigned int len) {
     cJSON* header = NULL;
-    cJSON* param = NULL;
     cJSON* param_kv = NULL;
     char* e = (char*)line + len;
     char* e2 = NULL, *p1 = NULL, *p2 = NULL, *p3 = NULL, *p4 = NULL, *p5 = NULL;
@@ -215,9 +213,8 @@ static cJSON* http_request_first_line(const char* line, unsigned int len) {
         if (NULL == p2)
             goto parse_failed;
         safe_memcpy_0(longest, sizeof(longest)-1, p1, p2-p1);
-        cJSON_AddItemToObject(header, "param", param = cJSON_CreateObject());
-        cJSON_AddStringToObject(param, "raw_param", longest);
-        cJSON_AddItemToObject(param, "kv", param_kv=cJSON_CreateObject());
+        cJSON_AddStringToObject(header, "param", longest);
+        cJSON_AddItemToObject(header, "param_kv", param_kv=cJSON_CreateObject());
         e2 = longest + strlen(longest);
         p3 = longest;
         do {
@@ -227,7 +224,7 @@ static cJSON* http_request_first_line(const char* line, unsigned int len) {
                 p4 = memchr(p3, '=', e2-p3);
                 if (NULL == p4) {
                     // only a single string, we take it as a key without value
-                    cJSON_AddStringToObject(param_kv, p3, "");
+                    // cJSON_AddStringToObject(param_kv, p3, "");
                 }
                 else {
                     safe_memcpy_0(key, sizeof(key)-1, p3, p4-p3);
@@ -239,6 +236,10 @@ static cJSON* http_request_first_line(const char* line, unsigned int len) {
             else {
                 // find `&`
                 p5 = memchr(p3, '=', p4-p3);
+                if (NULL == p5) {
+                    p3 = p4 + 1;
+                    continue;
+                }
                 safe_memcpy_0(key, sizeof(key)-1, p3, p5-p3);
                 safe_memcpy_0(value, sizeof(value)-1, p5+1, p4-p5-1);
                 cJSON_AddStringToObject(param_kv, key, value);
@@ -371,6 +372,7 @@ void http_create_request_header(cJSON* req, dyn_buf* buff) {
         if ((0 == memcmp(c->string, "cmd", 3)) 
                 || (0 == memcmp(c->string, "method", 6))
                 || (0 == memcmp(c->string, "param", 5))
+                || (0 == memcmp(c->string, "param_kv", 8))
                 || (0 == memcmp(c->string, "version", 7))
                 || (0 == memcmp(c->string, "first_line", 10))
                 || (0 == memcmp(c->string, "header-length", 13))) {
